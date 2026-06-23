@@ -164,6 +164,8 @@ class Tool(Plugin):
             dia = self.convunit(data["tools"][tool]["diameter"], unitinch)
             # Duplicates shouldn't be in the list - remove unnecessary
             blockholes = [data["tools"][tool]["holes"]]
+            if not blockholes:
+                continue
             block, holesCount = self.create_block(
                 blockholes, n + " (" + str(dia) + " " + unittext + ")"
             )
@@ -269,10 +271,6 @@ class Tool(Plugin):
         # ------------------------------------------------------------------
 
         # Check inputs
-        if holesDistance <= 0 and useAnchor is False:
-            app.setStatus(_("Driller abort: Distance must be > 0"))
-            return
-
         if peck < 0:
             app.setStatus(_("Driller abort: Peck must be >= 0"))
             return
@@ -288,6 +286,10 @@ class Tool(Plugin):
                 self.excellonimport(excellonFileName, app)
             else:
                 app.setStatus(_("Driller abort: Excellon-File not a file"))
+            return
+
+        if holesDistance <= 0 and useAnchor is False:
+            app.setStatus(_("Driller abort: Distance must be > 0"))
             return
 
         # Get selected blocks from editor
@@ -390,7 +392,6 @@ class Tool(Plugin):
 
     # Write gcommands from allHoles to the drill block
     def create_block(self, holes, name):
-        targetDepth = self.fromMm("TargetDepth")
         peck = self.fromMm("Peck")
         dwell = self["Dwell"]
         block = Block(name)
@@ -410,24 +411,25 @@ class Tool(Plugin):
                 else:
                     block.append(CNC.grapid(xH, yH))
 
-                if peck != 0:
-                    z = 0
-                    while z > targetDepth:
-                        z = max(z - peck, targetDepth)
-                        if self.useCustom:
-                            block.append(
-                                "( --- WARNING! Peck is not setup for laser mode --- )"
-                            )
-                            break
-                        else:
-                            block.append(CNC.zenter(zH + z))
-                            block.append(CNC.zsafe())
-
                 if self.useCustom:
+                    if peck > 0:
+                        block.append(
+                            "( --- WARNING! Peck is not setup for laser mode --- )"
+                        )
+                        break
                     block.append(f"G1 S{self.spinMax}")
                     block.append(CNC.gline(x=xH, y=yH))
                 else:
-                    block.append(CNC.zenter(targetDepth))
+                    block_appended = False
+                    if peck > 0:
+                        z = 0
+                        while z > zH:
+                            z = max(z - peck, zH)
+                            block.append(CNC.zenter(z))
+                            block.append(CNC.zsafe())
+                            block_appended = True
+                    if not block_appended:
+                        block.append(CNC.zenter(zH))
 
                 # Dwell time only on last pass
                 if dwell != 0:
