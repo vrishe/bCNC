@@ -711,6 +711,7 @@ class CNC:
         "TLO": 0.0,
         "motion": "G0",
         "WCS": "G54",
+        "wcspid": 0,
         "plane": "G17",
         "feedmode": "G94",
         "distance": "G90",
@@ -2279,10 +2280,10 @@ class Block(list):
     # ----------------------------------------------------------------------
     def pathMargins(self, xyz):
         self.xmin = min(self.xmin, min(i[0] for i in xyz))
-        self.ymin = min(self.ymin, min(i[1] for i in xyz))
-        self.zmin = min(self.zmin, min(i[2] for i in xyz))
         self.xmax = max(self.xmax, max(i[0] for i in xyz))
+        self.ymin = min(self.ymin, min(i[1] for i in xyz))
         self.ymax = max(self.ymax, max(i[1] for i in xyz))
+        self.zmin = min(self.zmin, min(i[2] for i in xyz))
         self.zmax = max(self.zmax, max(i[2] for i in xyz))
 
 
