@@ -4,7 +4,7 @@ from __future__ import absolute_import
 from __future__ import print_function
 from _GenericController import _GenericController
 from _GenericController import POSPAT, TLOPAT, DOLLARPAT
-from CNC import CNC
+from CNC import CNC, WCS
 
 import time
 import json
@@ -132,9 +132,9 @@ class Controller(_GenericController):
         if "unit" in sr:
             self.setCNCgvar("units", ["G20","G21"], int(sr["unit"]))
         if "coor" in sr and int(sr["coor"]) > 0:
-            self.setCNCgvar("WCS",
-                            ["G54", "G55", "G56", "G57", "G58", "G59"],
-                            int(sr["coor"])-1)
+            pid = int(sr["coor"])
+            self.setCNCgvar("WCS", WCS, pid-1)
+            self.setCNCgvar("wcspid", WCS, pid)
         if "g92e" in sr:
             self.setCNCgvar("G92", ["","G92"],int(sr["g92e"]))
         if "spc" in sr:
