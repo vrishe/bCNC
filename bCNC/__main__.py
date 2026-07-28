@@ -209,18 +209,22 @@ def main():
     Utils.saveConfiguration()
 
 if __name__ == "__main__":
-	sys.stdout.write("=" * 80 + "\n")
-	sys.stdout.write(
-		"WARNING: bCNC was recently ported to only support \n"
-		+ "python3.8 and newer.\n"
-	)
-	sys.stdout.write(
-		"Most things seem to work reasonably well.\n"
-	)
-	sys.stdout.write(
-		"Please report any issues to: "
-		+ "https://github.com/vlachoudis/bCNC/issues\n"
-	)
-	sys.stdout.write("=" * 80 + "\n")
+    sys.stdout.write("=" * 80 + "\n")
+    sys.stdout.write(
+        "WARNING: bCNC was recently ported to only support \n"
+        + "python3.8 and newer.\n"
+    )
+    sys.stdout.write(
+        "Most things seem to work reasonably well.\n"
+    )
+    sys.stdout.write(
+        "Please report any issues to: "
+        + "https://github.com/vlachoudis/bCNC/issues\n"
+    )
+    sys.stdout.write(
+        "You are running a fork: "
+        + "https://github.com/vrishe/bCNC\n"
+    )
+    sys.stdout.write("=" * 80 + "\n")
 
-	main()
+    main()

@@ -556,6 +556,8 @@ class Application(Tk, Sender):
                 break
             bFileDialog.append2History(os.path.dirname(filename))
 
+        self.after(300, self.canvas.fit2Screen)
+
     # -----------------------------------------------------------------------
     def setStatus(self, msg, force_update=False):
         self.statusbar.configText(text=msg, fill="DarkBlue")
@@ -674,6 +676,8 @@ class Application(Tk, Sender):
         self.bufferbar.clear()
         self.bufferbar.config(background="LightGray")
         self.bufferbar.setText("")
+        self.canvas.clearProcessed()
+        self.refresh()
 
     # ---------------------------------------------------------------------
     def disable(self):
@@ -1329,14 +1333,16 @@ class Application(Tk, Sender):
 
     # ----------------------------------------------------------------------
     def draw(self):
+        self.canvas.tracePaths()
+        self._selectionChangeInner()
         view = CNCCanvas.VIEWS.index(self.canvasFrame.view.get())
         self.canvas.draw(view)
-        self.selectionChange()
 
     # ----------------------------------------------------------------------
     # Redraw with a small delay
     # ----------------------------------------------------------------------
     def drawAfter(self, event=None):
+        self.canvas.invalidateTraces()
         if self._drawAfter is not None:
             self.after_cancel(self._drawAfter)
         self._drawAfter = self.after(DRAW_AFTER, self.draw)
@@ -2257,13 +2263,15 @@ class Application(Tk, Sender):
     # ----------------------------------------------------------------------
     # Selection has changed highlight the canvas
     # ----------------------------------------------------------------------
-    def selectionChange(self, event=None):
+    def _selectionChangeInner(self):
         items = self.editor.getSelection()
         self.canvas.clearSelection()
-        if not items:
+        if not items or self.running:
             return
         self.canvas.select(items)
         self.canvas.activeMarker(self.editor.getActive())
+    def selectionChange(self, event=None):
+        self.draw()
 
     # -----------------------------------------------------------------------
     # Create a new file
@@ -2276,7 +2284,10 @@ class Application(Tk, Sender):
         self.gcode.init()
         self.gcode.headerFooter()
         self.editor.fill()
+        self.canvas.reset()
+        self.canvas.invalidateTraces()
         self.draw()
+        self.canvas.fit2Screen()
         self.title(f"{Utils.__prg__} {__version__} {__platform_fingerprint__}")
 
     # -----------------------------------------------------------------------
@@ -2382,6 +2393,7 @@ class Application(Tk, Sender):
             self.editor.selectClear()
             self.editor.fill()
             self.canvas.reset()
+            self.canvas.invalidateTraces()
             self.draw()
             self.canvas.fit2Screen()
             Page.frames["CAM"].populate()
@@ -2593,23 +2605,6 @@ class Application(Tk, Sender):
                 )
                 return
 
-            # reset colors
-            before = time.time()
-            for ij in self._paths:  # Slow loop
-                if not ij:
-                    continue
-                path = self.gcode[ij[0]].path(ij[1])
-                if path:
-                    color = self.canvas.itemcget(path, "fill")
-                    if color != CNCCanvas.ENABLE_COLOR:
-                        self.canvas.itemconfig(
-                            path, width=1, fill=CNCCanvas.ENABLE_COLOR
-                        )
-                    # Force a periodic update since this loop can take time
-                    if time.time() - before > 0.25:
-                        self.update()
-                        before = time.time()
-
             # the buffer of the machine should be empty?
             self._runLines = len(self._paths) + 1  # plus the wait
         else:
@@ -2811,17 +2806,18 @@ class Application(Tk, Sender):
             self.bufferbar.setText(f"{Sender.getBufferFill(self):3.0f}%")
 
             if self._selectI >= 0 and self._paths:
+                need_redraw = False
                 while self._selectI <= self._gcount and self._selectI < len(
                     self._paths
                 ):
                     if self._paths[self._selectI]:
                         i, j = self._paths[self._selectI]
                         path = self.gcode[i].path(j)
-                        if path:
-                            self.canvas.itemconfig(
-                                path, width=2, fill=CNCCanvas.PROCESS_COLOR
-                            )
+                        if self.canvas.markProcessed(path):
+                            need_redraw = True
                     self._selectI += 1
+                if need_redraw:
+                    self.canvas.drawPaths()
 
             if self._gcount >= self._runLines:
                 self.runEnded()

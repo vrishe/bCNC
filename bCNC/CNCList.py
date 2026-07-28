@@ -909,15 +909,20 @@ class CNCListbox(Listbox):
 
     # ----------------------------------------------------------------------
     def getActive(self):
-        active = self.index(ACTIVE)
-        if active is None:
-            return None
-        if not self.selection_includes(active):
-            try:
-                active = self.curselection()[0]
-            except Exception:
-                return (0, None)
-        return self._items[int(active)]
+        try:
+            active = self.curselection()
+            return self._items[max(int(active[0]), int(active[-1]))]
+        except Exception:
+            return (0, None)
+        # active = self.index(ACTIVE)
+        # if active is None:
+        #     return None
+        # if not self.selection_includes(active):
+        #     try:
+        #         active = self.curselection()[0]
+        #     except Exception:
+        #         return (0, None)
+        # return self._items[int(active)]
 
     # ----------------------------------------------------------------------
     # Move selected items upwards

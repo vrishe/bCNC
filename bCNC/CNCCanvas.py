@@ -6,6 +6,7 @@
 import math
 import time
 import sys
+from types import SimpleNamespace as Entity
 
 from tkinter import (
     TclError,
@@ -63,8 +64,6 @@ except Exception:
     numpy = None
     RESAMPLE = None
 
-ANTIALIAS_CHEAP = False
-
 VIEW_XY = 0
 VIEW_XZ = 1
 VIEW_YZ = 2
@@ -78,7 +77,6 @@ GANTRY_R = 4
 GANTRY_X = GANTRY_R * 2  # 10
 GANTRY_Y = GANTRY_R  # 5
 GANTRY_H = GANTRY_R * 5  # 20
-DRAW_TIME = 5  # Maximum draw time permitted
 
 INSERT_COLOR = "Blue"
 GANTRY_COLOR = "Red"
@@ -103,7 +101,7 @@ PROBE_TEXT_COLOR = "Green"
 
 INFO_COLOR = "Gold"
 
-SELECTION_TAGS = ("sel", "sel2", "sel3", "sel4")
+SELECTION_TAGS = ("sel")
 
 ACTION_SELECT = 0
 ACTION_SELECT_SINGLE = 1
@@ -150,14 +148,6 @@ MOUSE_CURSOR = {
 # -----------------------------------------------------------------------------
 def mouseCursor(action):
     return MOUSE_CURSOR.get(action, DEF_CURSOR)
-
-
-# =============================================================================
-# Raise an alarm exception
-# =============================================================================
-class AlarmException(Exception):
-    pass
-
 
 # =============================================================================
 # Drawing canvas
@@ -212,6 +202,9 @@ class CNCCanvas(Canvas):
         self.zoom = 1.0
         self.__tzoom = 1.0  # delayed zoom (temporary)
         self._items = {}
+        self._traced = []
+        self._retrace = True
+        self._paths = {}
 
         self._x = self._y = 0
         self._xp = self._yp = 0
@@ -270,43 +263,8 @@ class CNCCanvas(Canvas):
 
         self.reset()
         self.initPosition()
-
-    # Calculate arguments for antialiasing
-    def antialias_args(self, args, winc=0.5, cw=2):
-        nargs = {}
-
-        # set defaults
-        nargs["width"] = 1
-        nargs["fill"] = "#000"
-
-        # get original args
-        for arg in args:
-            nargs[arg] = args[arg]
-        if nargs["width"] == 0:
-            nargs["width"] = 1
-
-        # calculate width
-        nargs["width"] += winc
-
-        # calculate color
-        cbg = self.winfo_rgb(self.cget("bg"))
-        cfg = list(self.winfo_rgb(nargs["fill"]))
-        cfg[0] = (cfg[0] + cbg[0] * cw) / (cw + 1)
-        cfg[1] = (cfg[1] + cbg[1] * cw) / (cw + 1)
-        cfg[2] = (cfg[2] + cbg[2] * cw) / (cw + 1)
-        nargs["fill"] = "#{:02x}{:02x}{:02x}".format(
-            int(cfg[0] / 256), int(cfg[1] / 256), int(cfg[2] / 256)
-        )
-
-        return nargs
-
-    # Override alias method if antialiasing enabled:
-    if ANTIALIAS_CHEAP:
-
-        def create_line(self, *args, **kwargs):
-            nkwargs = self.antialias_args(kwargs)
-            super().create_line(*args, **nkwargs)
-            return super().create_line(*args, **kwargs)
+        self.cnc.initPath()
+        self.cnc.resetAllMargins()
 
     # ----------------------------------------------------------------------
     def reset(self):
@@ -496,6 +454,8 @@ class CNCCanvas(Canvas):
     # ----------------------------------------------------------------------
     def click(self, event):
         self.focus_set()
+        if self.app.running:
+            return
         self._x = self._xp = event.x
         self._y = self._yp = event.y
 
@@ -542,12 +502,7 @@ class CNCCanvas(Canvas):
                         j + CLOSE_DISTANCE,
                     ):
                         tags = self.gettags(item)
-                        if (
-                            "sel" in tags
-                            or "sel2" in tags
-                            or "sel3" in tags
-                            or "sel4" in tags
-                        ):
+                        if "sel" in tags:
                             break
                     else:
                         self._mouseAction = ACTION_SELECT_SINGLE
@@ -622,9 +577,6 @@ class CNCCanvas(Canvas):
             self.coords(self._vector, *coords)
             if self._mouseAction == ACTION_MOVE:
                 self.move("sel", event.x - self._xp, event.y - self._yp)
-                self.move("sel2", event.x - self._xp, event.y - self._yp)
-                self.move("sel3", event.x - self._xp, event.y - self._yp)
-                self.move("sel4", event.x - self._xp, event.y - self._yp)
                 self._xp = event.x
                 self._yp = event.y
 
@@ -676,7 +628,7 @@ class CNCCanvas(Canvas):
                 items = []
                 for i in closest:
                     try:
-                        items.append(self._items[i])
+                        items.extend(self._itemsFromPath(i))
                     except Exception:
                         pass
 
@@ -690,7 +642,7 @@ class CNCCanvas(Canvas):
                 items = []
                 for i in closest:
                     try:
-                        items.append(self._items[i])
+                        items.extend(self._itemsFromPath(i))
                     except KeyError:
                         tags = self.gettags(i)
                         if "Orient" in tags:
@@ -698,6 +650,9 @@ class CNCCanvas(Canvas):
                             return
                         pass
             if not items:
+                if not self.app.running:
+                    self.app.editor.selectClear()
+                    self.app.selectionChange()
                 return
 
             self.app.select(
@@ -749,10 +704,8 @@ class CNCCanvas(Canvas):
 
         # ... and if we are closer than 5pixels
         for item in self.find_closest(cx, cy, CLOSE_DISTANCE):
-            try:
-                bid, lid = self._items[item]
-            except KeyError:
-                continue
+            if item not in self._items:
+                continue;
 
             # Very cheap and inaccurate approach :)
             coords = self.coords(item)
@@ -852,11 +805,16 @@ class CNCCanvas(Canvas):
     def _zoomCanvas(self, event=None):  # x, y, zoom):
         x = self._tx
         y = self._ty
+
         zoom = self.__tzoom
-
         self.__tzoom = 1.0
-
         self.zoom *= zoom
+        if self.zoom < 1.:
+            zoom = zoom / self.zoom
+            self.zoom = 1.
+        elif self.zoom > 500.:
+            zoom = 500. * (zoom / self.zoom)
+            self.zoom = 500.
 
         x0 = self.canvasx(0)
         y0 = self.canvasy(0)
@@ -893,17 +851,16 @@ class CNCCanvas(Canvas):
     # ----------------------------------------------------------------------
     def selBbox(self):
         x1 = None
-        for tag in ("sel", "sel2", "sel3", "sel4"):
-            bb = self.bbox(tag)
-            if bb is None:
-                continue
-            elif x1 is None:
-                x1, y1, x2, y2 = bb
-            else:
-                x1 = min(x1, bb[0])
-                y1 = min(y1, bb[1])
-                x2 = max(x2, bb[2])
-                y2 = max(y2, bb[3])
+        bb = self.bbox("sel")
+        if bb is None:
+            pass
+        elif x1 is None:
+            x1, y1, x2, y2 = bb
+        else:
+            x1 = min(x1, bb[0])
+            y1 = min(y1, bb[1])
+            x2 = max(x2, bb[2])
+            y2 = max(y2, bb[3])
 
         if x1 is None:
             return self.bbox("all")
@@ -1033,17 +990,15 @@ class CNCCanvas(Canvas):
     def activeMarker(self, item):
         if item is None:
             return
-        b, i = item
-        if i is None:
+        bid, lid = item
+        if lid is None:
             return
-        block = self.gcode[b]
-        item = block.path(i)
-
+        item = self.gcode[bid].path(lid)
         if item is not None and item != self._lastActive:
             if self._lastActive is not None:
-                self.itemconfig(self._lastActive, arrow=NONE)
+                self._traced[self._lastActive].last = False
             self._lastActive = item
-            self.itemconfig(self._lastActive, arrow=LAST)
+            self._traced[self._lastActive].last = True
 
     # ----------------------------------------------------------------------
     # Display gantry
@@ -1091,58 +1046,38 @@ class CNCCanvas(Canvas):
     # Clear highlight of selection
     # ----------------------------------------------------------------------
     def clearSelection(self):
-        if self._lastActive is not None:
-            self.itemconfig(self._lastActive, arrow=NONE)
-            self._lastActive = None
-
-        for i in self.find_withtag("sel"):
-            bid, lid = self._items[i]
-            if bid:
-                try:
-                    block = self.gcode[bid]
-                    if block.color:
-                        fill = block.color
-                    else:
-                        fill = ENABLE_COLOR
-                except IndexError:
-                    fill = ENABLE_COLOR
-            else:
-                fill = ENABLE_COLOR
-            self.itemconfig(i, width=1, fill=fill)
-
-        self.itemconfig("sel2", width=1, fill=DISABLE_COLOR)
-        self.itemconfig("sel3", width=1, fill=TAB_COLOR)
-        self.itemconfig("sel4", width=1, fill=DISABLE_COLOR)
-        for i in SELECTION_TAGS:
-            self.dtag(i)
-        self.delete("info")
+        self._lastActive = None
+        for entity in self._traced:
+            entity.selected = False
+            entity.last = False
 
     # ----------------------------------------------------------------------
     # Highlight selected items
     # ----------------------------------------------------------------------
     def select(self, items):
-        for b, i in items:
-            block = self.gcode[b]
-            if i is None:
-                sel = block.enable and "sel" or "sel2"
-                for path in block._path:
-                    if path is not None:
-                        self.addtag_withtag(sel, path)
-                sel = block.enable and "sel3" or "sel4"
-
-            elif isinstance(i, int):
-                path = block.path(i)
+        for bid,lid in items:
+            block = self.gcode[bid]
+            if isinstance(lid, int):
+                path = block.path(lid)
                 if path:
-                    sel = block.enable and "sel" or "sel2"
-                    self.addtag_withtag(sel, path)
+                    self._traced[path].selected = True
+            elif lid is None:
+                for path in block._path:
+                    if path:
+                        self._traced[path].selected = True
 
-        self.itemconfig("sel", width=2, fill=SELECT_COLOR)
-        self.itemconfig("sel2", width=2, fill=SELECT2_COLOR)
-        self.itemconfig("sel3", width=2, fill=TAB_COLOR)
-        self.itemconfig("sel4", width=2, fill=TABS_COLOR)
-        for i in SELECTION_TAGS:
-            self.tag_raise(i)
-        self.drawMargin()
+    def clearProcessed(self):
+        for entry in self._traced:
+            entry.processed = False
+
+    def markProcessed(self, path):
+        if not path:
+            return False
+        try:
+            self._traced[path].processed = True
+            return True
+        except IndexError:
+            return False
 
     # ----------------------------------------------------------------------
     # Select orientation marker
@@ -1373,6 +1308,9 @@ class CNCCanvas(Canvas):
     # Parse and draw the file from the editor to g-code commands
     # ----------------------------------------------------------------------
     def draw(self, view=None):
+        if self._mouseAction in [ ACTION_MOVE, ACTION_PAN ]:
+            return
+
         if self._inDraw:
             return
         self._inDraw = True
@@ -1386,7 +1324,6 @@ class CNCCanvas(Canvas):
         if view is not None:
             self.view = view
 
-        self._last = (0.0, 0.0, 0.0)
         self.initPosition()
 
         self.drawPaths()
@@ -1446,9 +1383,6 @@ class CNCCanvas(Canvas):
         self._lastActive = None
         self._select = None
         self._vector = None
-        self._items.clear()
-        self.cnc.initPath()
-        self.cnc.resetAllMargins()
 
     # ----------------------------------------------------------------------
     # Draw gantry location
@@ -1534,6 +1468,7 @@ class CNCCanvas(Canvas):
 
         if not CNC.isAllMarginValid():
             return
+
         xyz = [
             (CNC.vars["axmin"], CNC.vars["aymin"], 0.0),
             (CNC.vars["axmax"], CNC.vars["aymin"], 0.0),
@@ -1564,17 +1499,6 @@ class CNCCanvas(Canvas):
                 )
             ),
         )
-
-    # ----------------------------------------------------------------------
-    # Draw a 3D path
-    # ----------------------------------------------------------------------
-    def _drawPath(self, path, z=0.0, **kwargs):
-        xyz = []
-        for segment in path:
-            xyz.append((segment.A[0], segment.A[1], z))
-            xyz.append((segment.B[0], segment.B[1], z))
-        rect = (self.create_line(self.plotCoords(xyz), **kwargs),)
-        return rect
 
     # ----------------------------------------------------------------------
     # Draw a 3D rectangle
@@ -1894,69 +1818,60 @@ class CNCCanvas(Canvas):
         self._probeTkImage = ImageTk.PhotoImage(image)
         return x, y
 
-    # ----------------------------------------------------------------------
-    # Draw the paths for the whole gcode file
-    # ----------------------------------------------------------------------
-    def drawPaths(self):
+    def invalidateTraces(self):
+        self._retrace = True
+
+    def tracePaths(self):
+        if not self._retrace:
+            return
+
+        self.cnc.initPath()
+        self.cnc.resetAllMargins()
+
+        self._retrace = False
+        self._items.clear()
+        self._traced.clear()
+        self._last = (0.0, 0.0, 0.0)
         if not self.draw_paths:
             for block in self.gcode.blocks:
                 block.resetPath()
             return
-
-        try:
-            n = 1
-            startTime = before = time.time()
-            self.cnc.resetAllMargins()
-            drawG = self.draw_rapid or self.draw_paths or self.draw_margin
-            for i, block in enumerate(self.gcode.blocks):
-                start = True  # start location found
-                block.resetPath()
-
-                # Draw block
-                for j, line in enumerate(block):
-                    n -= 1
-                    if n == 0:
-                        if time.time() - startTime > DRAW_TIME:
-                            raise AlarmException()
-                        # Force a periodic update since this loop can take time
-                        if time.time() - before > 1.0:
-                            self.update()
-                            before = time.time()
-                        n = 1000
-                    try:
-                        cmd = self.gcode.evaluate(
-                            CNC.compileLine(line), self.app)
-                        if isinstance(cmd, tuple):
-                            cmd = None
-                        else:
-                            cmd = CNC.breakLine(cmd)
-                    except AlarmException:
-                        raise
-                    except Exception:
-                        sys.stderr.write(
-                            _(">>> ERROR: {}\n").format(str(sys.exc_info()[1]))
-                        )
-                        sys.stderr.write(_("     line: {}\n").format(line))
-                        cmd = None
-                    if cmd is None or not drawG:
-                        block.addPath(None)
+        self.cnc.resetAllMargins()
+        drawG = self.draw_rapid or self.draw_paths or self.draw_margin
+        for bid, block in enumerate(self.gcode.blocks):
+            started = False  # start location found
+            block.resetPath()
+            for lid, line in enumerate(block):
+                try:
+                    cmd = self.gcode.evaluate(CNC.compileLine(line), self.app)
+                    if not isinstance(cmd, tuple):
+                        cmd = CNC.breakLine(cmd)
                     else:
-                        path = self.drawPath(block, cmd)
-                        self._items[path] = i, j
-                        block.addPath(path)
-                        if start and self.cnc.gcode in (1, 2, 3):
-                            # Mark as start the first non-rapid motion
-                            block.startPath(self.cnc.x, self.cnc.y, self.cnc.z)
-                            start = False
-                block.endPath(self.cnc.x, self.cnc.y, self.cnc.z)
-        except AlarmException:
-            self.status("Rendering takes TOO Long. Interrupted...")
+                        cmd = None
+                except Exception:
+                    cmd = None
+                    sys.stderr.write(_(">>> ERROR: {}\n").format(str(sys.exc_info()[1])))
+                    sys.stderr.write(_("     line: {}\n").format(line))
+                if cmd is None or not drawG:
+                    block.addPath(None)
+                    continue
+                trace = self.tracePath(block, cmd)
+                if trace:
+                    coords, rapid = trace
+                    path = len(self._traced)
+                    self._traced.append(Entity(coords=coords, rapid = rapid, selected=False, last=False, processed=False))
+                    self._items[path] = bid, lid
+                    block.addPath(path)
+                else:
+                    block.addPath(None)
+                if not started and self.cnc.gcode in (1, 2, 3):
+                    # Mark as start the first non-rapid motion
+                    block.startPath(self.cnc.x, self.cnc.y, self.cnc.z)
+                    started = True
+            block.endPath(self.cnc.x, self.cnc.y, self.cnc.z)
 
-    # ----------------------------------------------------------------------
-    # Create path for one g command
-    # ----------------------------------------------------------------------
-    def drawPath(self, block, cmds):
-        self.cnc.motionStart(cmds)
+    def tracePath(self, block, cmd):
+        self.cnc.motionStart(cmd)
         xyz = self.cnc.motionPath()
         self.cnc.motionEnd()
         if xyz:
@@ -1971,24 +1886,64 @@ class CNCCanvas(Canvas):
             else:
                 if self.cnc.gcode == 0:
                     return None
-            coords = self.plotCoords(xyz)
-            if coords:
-                if block.enable:
-                    if block.color:
-                        fill = block.color
-                    else:
-                        fill = ENABLE_COLOR
-                else:
-                    fill = DISABLE_COLOR
-                if self.cnc.gcode == 0:
-                    if self.draw_rapid:
-                        return self.create_line(coords, fill=fill,
-                                                width=0, dash=(4, 3))
-                elif self.draw_paths:
-                    return self.create_line(
-                        coords, fill=fill, width=0, cap="projecting"
-                    )
+            return (xyz, self.cnc.gcode == 0)
         return None
+
+    @staticmethod
+    def _getStyleDict(entry, block):
+        style={}
+        if entry.processed:
+            style['fill'] = PROCESS_COLOR
+            style['width'] = 1
+        else:
+            if entry.selected:
+                style['tag'] = "sel"
+                style['fill'] = SELECT_COLOR if block.enable else SELECT2_COLOR
+                style['width'] = 2
+            else:
+                style['fill'] = (block.color or ENABLE_COLOR) if block.enable else DISABLE_COLOR
+                style['width'] = 0
+            if entry.last:
+                style['arrow']=LAST
+        if entry.rapid:
+            style['dash']=(4,3)
+        else:
+            style['cap']='projecting'
+        return style
+
+    @staticmethod
+    def _isSamePoint(a, b):
+        return all([math.isclose(*t, rel_tol=1e-6) for t in zip(a, b)])
+
+    # ----------------------------------------------------------------------
+    # Draw the paths for the whole gcode file
+    # ----------------------------------------------------------------------
+    def drawPaths(self):
+        batch = {}
+        for i, entry in enumerate(self._traced):
+            if not (self.draw_rapid if entry.rapid else self.draw_paths):
+                continue
+            bid, lid = self._items[i]
+            block = self.gcode[bid]
+            style = CNCCanvas._getStyleDict(entry, block)
+            _, lines = batch.setdefault(frozenset(style.items()), (style, []))
+            if lines:
+                line, items = lines[-1]
+                if CNCCanvas._isSamePoint(line[-1], entry.coords[0]):
+                    line.extend(entry.coords[1:])
+                    items.append(i)
+                    continue
+            lines.append((list(entry.coords), [i]))
+        self.delete(*self._paths.keys())
+        self._paths.clear()
+        for _, style_lines in batch.items():
+            style, lines = style_lines
+            for line, items in lines:
+                path = self.create_line(*self.plotCoords(line), **style)
+                self._paths[path] = items
+
+    def _itemsFromPath(self, path):
+        return [self._items[i] for i in self._paths.get(path, [])]
 
     # ----------------------------------------------------------------------
     # Return plotting coordinates for a 3d xyz path
@@ -2027,18 +1982,6 @@ class CNCCanvas(Canvas):
                 )
                 for p in xyz
             ]
-        # Check limits
-        for i, (x, y) in enumerate(coords):
-            if abs(x) > MAXDIST or abs(y) > MAXDIST:
-                if x < -MAXDIST:
-                    x = -MAXDIST
-                elif x > MAXDIST:
-                    x = MAXDIST
-                if y < -MAXDIST:
-                    y = -MAXDIST
-                elif y > MAXDIST:
-                    y = MAXDIST
-                coords[i] = (x, y)
         return coords
 
     # ----------------------------------------------------------------------
@@ -2129,7 +2072,6 @@ class CanvasFrame(Frame):
         global BOX_SELECT, ENABLE_COLOR, DISABLE_COLOR, SELECT_COLOR
         global SELECT2_COLOR, PROCESS_COLOR, MOVE_COLOR, RULER_COLOR
         global CAMERA_COLOR, PROBE_TEXT_COLOR, CANVAS_COLOR
-        global DRAW_TIME
 
         self.draw_axes.set(bool(int(Utils.getBool("Canvas", "axes", True))))
         self.draw_grid.set(bool(int(Utils.getBool("Canvas", "grid", True))))
@@ -2140,8 +2082,6 @@ class CanvasFrame(Frame):
             bool(int(Utils.getBool("Canvas", "workarea", True))))
 
         self.view.set(Utils.getStr("Canvas", "view", VIEWS[0]))
-
-        DRAW_TIME = Utils.getInt("Canvas", "drawtime", DRAW_TIME)
 
         INSERT_COLOR = Utils.getStr("Color", "canvas.insert", INSERT_COLOR)
         GANTRY_COLOR = Utils.getStr("Color", "canvas.gantry", GANTRY_COLOR)
@@ -2162,7 +2102,6 @@ class CanvasFrame(Frame):
 
     # ----------------------------------------------------------------------
     def saveConfig(self):
-        Utils.setInt("Canvas", "drawtime", DRAW_TIME)
         Utils.setStr("Canvas", "view", self.view.get())
         Utils.setBool("Canvas", "axes", self.draw_axes.get())
         Utils.setBool("Canvas", "grid", self.draw_grid.get())
@@ -2340,20 +2279,10 @@ class CanvasFrame(Frame):
         tkExtra.Balloon.set(b, _("Redraw display [Ctrl-R]"))
         b.pack(side=LEFT)
 
-        # -----------
-        self.drawTime = tkExtra.Combobox(
-            toolbar, width=3, background="White", command=self.drawTimeChange
-        )
-        tkExtra.Balloon.set(self.drawTime, _("Draw timeout in seconds"))
-        self.drawTime.fill(
-            ["inf", "1", "2", "3", "5", "10", "20", "30", "60", "120"])
-        self.drawTime.set(DRAW_TIME)
-        self.drawTime.pack(side=RIGHT)
-        Label(toolbar, text=_("Timeout:")).pack(side=RIGHT)
-
     # ----------------------------------------------------------------------
     def redraw(self, event=None):
         self.canvas.reset()
+        self.canvas.invalidateTraces()
         self.event_generate("<<ViewChange>>")
 
     # ----------------------------------------------------------------------
@@ -2438,12 +2367,3 @@ class CanvasFrame(Frame):
             self.canvas.cameraOn()
         else:
             self.canvas.cameraOff()
-
-    # ----------------------------------------------------------------------
-    def drawTimeChange(self):
-        global DRAW_TIME
-        try:
-            DRAW_TIME = int(self.drawTime.get())
-        except ValueError:
-            DRAW_TIME = 5 * 60
-        self.viewChange()
