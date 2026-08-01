@@ -1737,6 +1737,8 @@ class CNCCanvas(Canvas):
             except (IndexError, TclError):
                 pass
 
+    probe_palette = []
+
     # ----------------------------------------------------------------------
     # Display probe
     # ----------------------------------------------------------------------
@@ -1783,37 +1785,42 @@ class CNCCanvas(Canvas):
         ):
             array = numpy.array(list(reversed(probe.matrix)), numpy.float32)
 
-            lw = array.min()
-            hg = array.max()
-            mx = max(abs(hg), abs(lw))
-            # scale should be:
-            #  -mx   .. 0 .. mx
-            #  -127     0    127
-            # -127 = light-blue
-            #    0 = white
-            #  127 = light-red
-            dc = mx / 127.0  # step in colors
-            if abs(dc) < 1e-8:
-                return
-            palette = []
-            for x in bmath.frange(lw, hg + 1e-10, (hg - lw) / 255.0):
-                i = int(math.floor(x / dc))
-                j = i + i >> 1  # 1.5*i
-                if i < 0:
-                    palette.append(0xFF + j)
-                    palette.append(0xFF + j)
-                    palette.append(0xFF)
-                elif i > 0:
-                    palette.append(0xFF)
-                    palette.append(0xFF - j)
-                    palette.append(0xFF - j)
-                else:
-                    palette.append(0xFF)
-                    palette.append(0xFF)
-                    palette.append(0xFF)
-            array = numpy.floor((array - lw) / (hg - lw) * 255)
+            lw = numpy.inf
+            hg = -lw
+            for v in array.flat:
+                if v < lw:
+                    lw = v
+                if v > hg:
+                    hg = v
+
+            array = numpy.select(
+                    [
+                        array < 0,
+                        array >= 0
+                    ], 
+                    [
+                        array / -lw,
+                        array / hg
+                    ])
+            array = numpy.clip(numpy.round((array + 1.) * 127), 0, 254)
             self._probeImage = Image.fromarray(
-                array.astype(numpy.int16)).convert("L")
+                array.astype(numpy.int8)).convert("L")
+
+            palette = CNCCanvas.probe_palette
+            if not palette:
+                for i in range(-127,0):
+                    j = i + i >> 1  # 1.5*i
+                    palette.append(0xFF + j)
+                    palette.append(0xFF + j)
+                    palette.append(0xFF)
+                palette.append(0xFF)
+                palette.append(0xFF)
+                palette.append(0xFF)
+                for i in range(0, 127):
+                    j = i + i >> 1  # 1.5*i
+                    palette.append(0xFF)
+                    palette.append(0xFF - j)
+                    palette.append(0xFF - j)
             self._probeImage.putpalette(palette)
 
             # Add transparency for a possible composite operation latter on ISO*

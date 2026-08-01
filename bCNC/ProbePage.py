@@ -1331,6 +1331,22 @@ class AutolevelFrame(CNCRibbon.PageFrame):
         lframe.grid_columnconfigure(2, weight=2)
         lframe.grid_columnconfigure(3, weight=1)
 
+        row += 1
+        col = 0
+
+        self.fastMode = IntVar()
+        self.fastModeCb = Checkbutton(
+            lframe,
+            text=_("Fast Mode"),
+            variable=self.fastMode,  # onvalue=1, offvalue=0,
+            activebackground="LightYellow",
+            padx=2,
+            pady=1,
+        )
+        self.fastModeCb.grid(row=row, column=col, sticky=EW)
+        tkExtra.Balloon.set(self.fastModeCb, _("Use fast scan algorithm"))
+        self.addWidget(self.fastModeCb)
+
         self.loadConfig()
 
     # -----------------------------------------------------------------------
@@ -1361,6 +1377,7 @@ class AutolevelFrame(CNCRibbon.PageFrame):
         Utils.setInt("Probe", "yn", self.probeYbins.get())
         Utils.setFloat("Probe", "zmin", self.probeZmin.get())
         Utils.setFloat("Probe", "zmax", self.probeZmax.get())
+        Utils.setInt("Probe", "al_fastmode", self.fastMode.get())
 
     # -----------------------------------------------------------------------
     def loadConfig(self):
@@ -1370,6 +1387,7 @@ class AutolevelFrame(CNCRibbon.PageFrame):
         self.probeYmax.set(Utils.getFloat("Probe", "ymax"))
         self.probeZmin.set(Utils.getFloat("Probe", "zmin"))
         self.probeZmax.set(Utils.getFloat("Probe", "zmax"))
+        self.fastMode.set(Utils.getInt("Probe", "al_fastmode"))
 
         self.probeXbins.delete(0, END)
         self.probeXbins.insert(0, max(2, Utils.getInt("Probe", "xn", 5)))
@@ -1502,7 +1520,7 @@ class AutolevelFrame(CNCRibbon.PageFrame):
             return
         self.event_generate("<<DrawProbe>>")
         # absolute
-        self.app.run(lines=self.app.gcode.probe.scan())
+        self.app.run(lines=self.app.gcode.probe.scan(self.fastMode.get() != 0))
 
     # -----------------------------------------------------------------------
     # Scan autolevel margins
@@ -2316,6 +2334,8 @@ class ProbePage(CNCRibbon.Page):
             pass
         try:
             self.addPageFrame(f"Probe:{tab}")
+            if tab == 'Autolevel':
+                self.master.event_generate("<<DrawProbe>>")
         except KeyError:
             pass
 

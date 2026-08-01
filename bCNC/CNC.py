@@ -144,6 +144,8 @@ class Probe:
         self.zeroed = False  # if probe was zeroed at any location
         self.start = False  # start collecting probes
         self.saved = False
+        self.take_each = 0
+        self.take_index = 0
 
     # ----------------------------------------------------------------------
     def clear(self):
@@ -152,6 +154,8 @@ class Probe:
         self.zeroed = False
         self.start = False
         self.saved = False
+        self.take_each = 0
+        self.take_index = 0
 
     # ----------------------------------------------------------------------
     def isEmpty(self):
@@ -171,6 +175,8 @@ class Probe:
             self.filename = filename
         self.clear()
         self.saved = True
+        self.take_each = 1
+        self.take_index = 0
 
         def read(f):
             while True:
@@ -200,6 +206,10 @@ class Probe:
                     self.add(*read(f))
         except Exception:
             raise
+        finally:
+            self.start = False
+            self.take_each = 0
+            self.take_index = 0
         f.close()
 
     # ----------------------------------------------------------------------
@@ -277,9 +287,11 @@ class Probe:
     # ----------------------------------------------------------------------
     # Return the code needed to scan for autoleveling
     # ----------------------------------------------------------------------
-    def scan(self):
+    def scan(self, fast=False):
         self.clear()
         self.start = True
+        self.take_each = 3 if fast else 1
+        self.take_index = 0
         self.makeMatrix()
         x = self.xmin
         xstep = self._xstep
@@ -293,10 +305,16 @@ class Probe:
                 lines.append(f"G0Z{self.zmax:.4f}")
                 lines.append(f"G0X{x:.4f}Y{y:.4f}")
                 lines.append("%wait")  # added for smoothie
-                lines.append(
-                    f"{CNC.vars['prbcmd']}Z{self.zmin:.4f}"
-                    f"F{CNC.vars['prbfeed']:g}"
-                )
+                if fast:
+                    lines.append(f"G38.2 Z{self.zmin:.4f} F{CNC.vars['fastprbfeed']:g}")
+                    lines.append(f"G38.4 Z{self.zmax:.4f} F{CNC.vars['fastprbfeed']:g}")
+                    lines.append("%wait")  # added for smoothie
+                    lines.append(f"G38.2 Z{self.zmin:.4f} F{CNC.vars['prbfeed']:g}")
+                else:
+                    lines.append(
+                        f"{CNC.vars['prbcmd']}Z{self.zmin:.4f}"
+                        f"F{CNC.vars['prbfeed']:g}"
+                    )
                 lines.append("%wait")  # added for smoothie
                 x += xstep
             x -= xstep
@@ -309,7 +327,7 @@ class Probe:
     # Add a probed point to the list and the 3D matrix
     # ----------------------------------------------------------------------
     def add(self, x, y, z):
-        if not self.start:
+        if not self.start or self.take_each <= 0:
             return
         i = round((x - self.xmin) / self._xstep)
         if i < 0.0 or i > self.xn:
@@ -326,6 +344,11 @@ class Probe:
         rem = abs(y - (j * self._ystep + self.ymin))
         if rem > self._ystep / 10.0:
             return
+
+        self.take_index += 1
+        if self.take_index < self.take_each:
+            return
+        self.take_index = 0
 
         try:
             self.matrix[int(j)][int(i)] = z
