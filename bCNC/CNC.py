@@ -5136,6 +5136,18 @@ class GCode:
             best[i], best[ptr] = best[ptr], best[i]
         self.addUndo(undoinfo, "Optimize")
 
+    def quickCheck(self):
+        if self.probe.isEmpty():
+            return
+        for i, block in enumerate(self.blocks):
+            if not block.enable:
+                continue
+            if block.name() in ("Header", "Footer"):
+                continue
+            for j, line in enumerate(block):
+                if 'G53' in line.upper():
+                    raise RuntimeError(f'block {i} \'{block.name()}\', line {j} \'{line}\':\nG53 is not supported with autoleveling feature!')
+
     # ----------------------------------------------------------------------
     # Use probe information to modify the g-code to autolevel
     # ----------------------------------------------------------------------
@@ -5159,6 +5171,7 @@ class GCode:
         for i, block in enumerate(self.blocks):
             if not block.enable:
                 continue
+            untouched = block.name() in ("Header", "Footer")
             for j, line in enumerate(block):
                 every -= 1
                 if every <= 0:
@@ -5172,6 +5185,9 @@ class GCode:
                     continue
                 elif isinstance(cmds, str):
                     cmds = CNC.breakLine(cmds)
+                    if untouched:
+                        add(cmds, (i, j))
+                        continue
                 else:
                     # either CodeType or tuple, list[] append at it as is
                     if (isinstance(cmds, types.CodeType)

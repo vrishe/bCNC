@@ -2543,17 +2543,22 @@ class Application(Tk, Sender):
 
         if self.serial is None and not CNC.developer:
             messagebox.showerror(
-                _("Serial Error"), _("Serial is not connected"), parent=self
-            )
+                _("Serial Error"), _("Serial is not connected"), parent=self)
             return
         if self.running:
             if self._pause:
                 self.resume()
                 return
             messagebox.showerror(
-                _("Already running"), _("Please stop before"), parent=self
-            )
+                _("Already running"), _("Please stop before"), parent=self)
             return
+        else:
+            try:
+                self.gcode.quickCheck()
+            except RuntimeError as ex:
+                messagebox.showerror(
+                    _("GCode Error"), _(str(ex)), parent=self)
+                return
 
         self.editor.selectClear()
         self.selectionChange()
@@ -2584,13 +2589,10 @@ class Application(Tk, Sender):
                 self.emptyQueue()
                 self.purgeController()
                 return
-            elif not self._paths:
+            if not self._paths:
                 self.runEnded()
                 messagebox.showerror(
-                    _("Empty gcode"),
-                    _("Not gcode file was loaded"),
-                    parent=self
-                )
+                    _("Empty gcode"), _("Not gcode file was loaded"), parent=self)
                 return
 
             # reset colors
