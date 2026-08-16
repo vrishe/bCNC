@@ -35,6 +35,8 @@
 
 import fnmatch
 import os
+import platform
+import sys
 import time
 from stat import (
     ST_MODE,
@@ -81,6 +83,7 @@ __author__ = "Vasilis Vlachoudis"
 __email__ = "Vasilis.Vlachoudis@cern.ch"
 
 
+_DRV_TYPE = " <DRIVE>"
 _DIR_TYPE = " <DIR>"
 _FILE_TYPE = "-file-"
 _LINK_TYPE = "-link-"
@@ -129,6 +132,7 @@ COLORS = {
     _LINK_TYPE: "DarkCyan",
     _BACKUP_TYPE: "DarkGray",
     _DIR_TYPE: "DarkBlue",
+    _DRV_TYPE: "DarkBlue",
 }
 
 DESCRIPTION = {
@@ -168,6 +172,7 @@ DESCRIPTION = {
     _LINK_TYPE: _LINK_TYPE,
     _BACKUP_TYPE: _BACKUP_TYPE,
     _DIR_TYPE: _DIR_TYPE,
+    _DRV_TYPE: _DRV_TYPE,
 }
 
 # Converted from GIF to base64 PhotoImage
@@ -188,11 +193,39 @@ Bxc5TGgUAUKDhgoRElrMQEECAwQGChAYIABAgEUwBQUCADs=
 _history = []
 
 
+if platform.system() == 'Windows':
+    PATH_PREFIX_WIN32 = '\\\\?'
+    def _isPrefixedPath(path):
+        return path.startswith(PATH_PREFIX_WIN32)
+    def _addPathPrefix(path):
+        return os.sep.join([PATH_PREFIX_WIN32, path]) if not _isPrefixedPath(path) else path
+    def _stripPathPrefix(path):
+        if _isPrefixedPath(path):
+            return path[len(PATH_PREFIX_WIN32) + 1:]
+        return path
+    def _splitPrefixedPath(path):
+        if _isPrefixedPath(path):
+            path = path[len(PATH_PREFIX_WIN32)+1:].split(os.sep)
+            path.insert(0, PATH_PREFIX_WIN32)
+            return path
+        return path.split(os.sep)
+else:
+    def _isPrefixedPath(path):
+        return False
+    def _addPathPrefix(path):
+        return path
+    def _stripPathPrefix(path):
+        return path
+    def _splitPrefixedPath(path):
+        return path.split(os.sep)
+
+
 # -----------------------------------------------------------------------------
 def append2History(path):
     global _history
     if not path:
         return
+    path = _stripPathPrefix(path)
     if path not in _history:
         _history.append(path)
 
@@ -232,7 +265,6 @@ def fileTypeColor(filename):
             ext = DESCRIPTION.get(ext, ext)
 
     return ext, color
-
 
 # =============================================================================
 # FileDialog
@@ -282,13 +314,14 @@ class FileDialog(Toplevel):
         if FileDialog.newfolder is None:
             FileDialog.newfolder = PhotoImage(data=_ICON)
 
-        Button(
+        self.newFolderButton = Button(
             self.dirframe,
             image=FileDialog.newfolder,
             padx=3,
             pady=3,
             command=self.newFolder,
-        ).grid(row=0, column=100)
+        )
+        self.newFolderButton.grid(row=0, column=100)
         self.dirframe.grid_columnconfigure(98, weight=1)
         self.buttons = []
 
@@ -380,6 +413,8 @@ class FileDialog(Toplevel):
             self.filename.insert(0, n)
             self.filename.select_range(0, END)
 
+        self.path = _addPathPrefix(self.path)
+
         # Flags
         self.hidden = False  # Show hidden files
         self.links = True  # Show links
@@ -432,7 +467,7 @@ class FileDialog(Toplevel):
     # Create buttons for the path
     # ----------------------------------------------------------------------
     def buttonPath(self, path):
-        path = path.split(os.sep)
+        path = _splitPrefixedPath(path)
         if path[0] == "":
             path[0] = os.sep
         if path[-1] == "":
@@ -484,8 +519,8 @@ class FileDialog(Toplevel):
             path = os.sep + os.sep.join(path[1:])
         else:
             path = os.sep.join(path)
-        if path == "":
-            path = os.sep
+            if path == "":
+                path = os.sep
         self.fileList.focus_set()
         self.changePath(path)
 
@@ -571,6 +606,12 @@ class FileDialog(Toplevel):
 
     # ----------------------------------------------------------------------
     def changePath(self, path):
+        path = _addPathPrefix(path)
+        if path == PATH_PREFIX_WIN32:
+            self.buttonPath(path)
+            self.path = path
+            self.fill()
+            return
         if path[-1] != os.sep:
             path += os.sep
         path = os.path.abspath(path)
@@ -594,65 +635,78 @@ class FileDialog(Toplevel):
         if path is None:
             path = self.path
 
-        # Populate list but sorted
-        try:
-            for fn in os.listdir(path):
-                if not self.hidden and fn[0] == ".":
-                    continue
-                filename = os.path.join(path, fn)
-                ext, color = fileTypeColor(filename)
+        if path == PATH_PREFIX_WIN32:
+            for drv in os.listdrives():
+                self.fileList.insert(
+                    END,
+                    (
+                        drv,
+                        _DRV_TYPE,
+                        0,
+                        0,
+                    ),
+                )
+                self.fileList.setColor(END, COLORS[_DRV_TYPE])
+        else:
+            # Populate list but sorted
+            try:
+                for fn in os.listdir(path):
+                    if not self.hidden and fn[0] == ".":
+                        continue
+                    filename = os.path.join(path, fn)
+                    ext, color = fileTypeColor(filename)
 
-                try:
-                    s = os.lstat(filename)
-                except Exception:
-                    continue
-
-                size = 0
-                islnk = S_ISLNK(s[ST_MODE])
-                if islnk:
                     try:
-                        s = os.stat(filename)
+                        s = os.lstat(filename)
                     except Exception:
                         continue
-                isdir = S_ISDIR(s[ST_MODE])
 
-                if self.filter is not None and not isdir and not islnk:
-                    match = False
-                    for pat in self.filter:
-                        if fnmatch.fnmatch(fn, pat):
-                            match = True
-                            break
-                else:
-                    match = True
+                    size = 0
+                    islnk = S_ISLNK(s[ST_MODE])
+                    if islnk:
+                        try:
+                            s = os.stat(filename)
+                        except Exception:
+                            continue
+                    isdir = S_ISDIR(s[ST_MODE])
 
-                if isdir:
-                    if not self.dirs:
-                        continue
-                elif islnk:
-                    if not self.links:
-                        continue
-                else:
-                    size = s[ST_SIZE]
+                    if self.filter is not None and not isdir and not islnk:
+                        match = False
+                        for pat in self.filter:
+                            if fnmatch.fnmatch(fn, pat):
+                                match = True
+                                break
+                    else:
+                        match = True
 
-                if match:
-                    self.fileList.insert(
-                        END,
-                        (
-                            fn,
-                            ext,
-                            size,
-                            time.strftime(_TIME_FORMAT,
-                                          time.localtime(s[ST_MTIME])),
-                        ),
-                    )
-                    if not self.files and not isdir:
-                        self.fileList.setColor(END, DISABLE_FILE)
-                    elif color:
-                        self.fileList.setColor(END, color)
-        except OSError:
-            messagebox.showerror(
-                _("Error"), _("Error listing folder \"{}\"").format(path), parent=self
-            )
+                    if isdir:
+                        if not self.dirs:
+                            continue
+                    elif islnk:
+                        if not self.links:
+                            continue
+                    else:
+                        size = s[ST_SIZE]
+
+                    if match:
+                        self.fileList.insert(
+                            END,
+                            (
+                                fn,
+                                ext,
+                                size,
+                                time.strftime(_TIME_FORMAT,
+                                              time.localtime(s[ST_MTIME])),
+                            ),
+                        )
+                        if not self.files and not isdir:
+                            self.fileList.setColor(END, DISABLE_FILE)
+                        elif color:
+                            self.fileList.setColor(END, color)
+            except OSError:
+                messagebox.showerror(
+                    _("Error"), _("Error listing folder \"{}\"").format(path), parent=self
+                )
 
         if FileDialog.sort is None:
             self.fileList.sort(0, False)  # First short by name
@@ -683,14 +737,15 @@ class FileDialog(Toplevel):
 
     # ----------------------------------------------------------------------
     def open(self, fn):
-        if self.seldir and self.path == fn:
-            self.selFile = self.path
+        path_stripped = _stripPathPrefix(self.path)
+        if self.seldir and path_stripped == fn:
+            self.selFile = path_stripped
 
         # Single file selection
         elif fn.find('","') < 0:
             # Check for path
             try:
-                filename = os.path.join(self.path, fn)
+                filename = os.path.join(path_stripped, fn)
                 s = os.stat(filename)
                 if S_ISDIR(s[ST_MODE]):
                     self.changePath(filename)
@@ -721,14 +776,14 @@ class FileDialog(Toplevel):
         # Multiple file selection
         else:
             self.selFile = [
-                os.path.join(self.path, f) for f in fn[1:-1].split('","')]
+                os.path.join(path_stripped, f) for f in fn[1:-1].split('","')]
 
         if self.check():
             global _history
             # Delete all temporary directories and keep only the last one
             if len(_history) > self._historyOldLen:
                 del _history[self._historyOldLen:]
-            append2History(self.path)
+            append2History(path_stripped)
             self.close()
 
     # ----------------------------------------------------------------------
@@ -775,7 +830,7 @@ class FileDialog(Toplevel):
         if len(sel) != 1:
             return
         item = self.fileList.get(sel[0])
-        if item[1] == _DIR_TYPE:
+        if item[1] in (_DIR_TYPE, _DRV_TYPE):
             self.changePath(os.path.join(self.path, item[0]))
             return "break"
         elif item[1] == _LINK_TYPE:
@@ -935,6 +990,10 @@ class FileDialog(Toplevel):
 # =============================================================================
 class OpenDialog(FileDialog):
     _title = _("Open")
+
+    def __init__(self, **kw):
+        FileDialog.__init__(self, **kw)
+        self.newFolderButton["state"] = "disabled"
 
     # ----------------------------------------------------------------------
     # Check if file exist
