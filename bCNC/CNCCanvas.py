@@ -1751,6 +1751,8 @@ class CNCCanvas(Canvas):
             self._probeImage = self._probeImage.convert("RGBA")
 
             x, y = self._projectProbeImage()
+            if not self._probeTkImage:
+                return;
 
             self._probe = self.create_image(
                 x, y, image=self._probeTkImage, anchor="sw")
@@ -1765,10 +1767,13 @@ class CNCCanvas(Canvas):
             int((probe.xmax - probe.xmin + probe._xstep) * self.zoom),
             int((probe.ymax - probe.ymin + probe._ystep) * self.zoom),
         )
+        if self.zoom > 40 or  size[0] * size[1] >= Image.MAX_IMAGE_PIXELS:
+            self._probeTkImage = None
+            return 0, 0
+
         marginx = int(probe._xstep / 2.0 * self.zoom)
         marginy = int(probe._ystep / 2.0 * self.zoom)
         crop = (marginx, marginy, size[0] - marginx, size[1] - marginy)
-
         image = self._probeImage.resize((size), resample=RESAMPLE).crop(crop)
 
         if self.view in (VIEW_ISO1, VIEW_ISO2, VIEW_ISO3):
